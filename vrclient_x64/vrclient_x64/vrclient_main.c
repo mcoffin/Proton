@@ -910,26 +910,29 @@ EVRCompositorError ivrcompositor_submit(
 
             texture_iface = texture->handle;
 
-            if (SUCCEEDED(hr = texture_iface->lpVtbl->QueryInterface(texture_iface,
-                    &IID_IWineD3D11Texture2D, (void **)&wine_texture)))
-            {
-                return ivrcompositor_submit_wined3d(cpp_func, linux_side,
-                        eye, texture, bounds, flags, version, user_data, wine_texture);
-            }
+	    TRACE("texture_iface = %p\n", texture_iface);
+
+	    if (texture_iface != NULL) {
+		    if (SUCCEEDED(hr = texture_iface->lpVtbl->QueryInterface(texture_iface,
+			    &IID_IWineD3D11Texture2D, (void **)&wine_texture)))
+		    {
+			return ivrcompositor_submit_wined3d(cpp_func, linux_side,
+				eye, texture, bounds, flags, version, user_data, wine_texture);
+		    }
 
 #ifdef VRCLIENT_HAVE_DXVK
-            {
-                IDXGIVkInteropSurface *dxvk_surface;
+		    {
+			IDXGIVkInteropSurface *dxvk_surface;
 
-                if (SUCCEEDED(hr = texture_iface->lpVtbl->QueryInterface(texture_iface,
-                        &IID_IDXGIVkInteropSurface, (void **)&dxvk_surface)))
-                {
-                    return ivrcompositor_submit_dxvk(cpp_func, linux_side,
-                            eye, texture, bounds, flags, version, user_data, dxvk_surface);
-                }
-            }
+			if (SUCCEEDED(hr = texture_iface->lpVtbl->QueryInterface(texture_iface,
+				&IID_IDXGIVkInteropSurface, (void **)&dxvk_surface)))
+			{
+			    return ivrcompositor_submit_dxvk(cpp_func, linux_side,
+				    eye, texture, bounds, flags, version, user_data, dxvk_surface);
+			}
+		    }
 #endif
-
+	    }
             WARN("Invalid D3D11 texture %p.\n", texture);
             return cpp_func(linux_side, eye, texture, bounds, flags);
         }
