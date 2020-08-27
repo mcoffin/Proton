@@ -61,7 +61,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
     return TRUE;
 }
 
-static char *vrclient_texture_type_name(ETextureType type) {
+char *vrclient_texture_type_name(ETextureType type) {
 	char *ret = "";
 	switch (type) {
 		case TextureType_DirectX:
@@ -769,10 +769,7 @@ static EVRCompositorError ivrcompositor_submit_wined3d(
 }
 
 #ifdef VRCLIENT_HAVE_DXVK
-static EVROverlayError ivroverlay_set_overlay_texture_dxvk(
-		EVROverlayError (*cpp_func)(void *, VROverlayHandle_t, Texture_t *),
-		void *linux_side, VROverlayHandle_t overlayHandle, Texture_t *texture,
-		unsigned int version, struct overlay_data *user_data, IDXGIVkInteropSurface *dxvk_surface)
+Texture_t vrclient_translate_texture_dxvk(Texture_t *texture, IDXGIVkInteropSurface *dxvk_surface, IDXGIVkInteropDevice **p_dxvk_device, VkImageLayout *p_image_layout, VkImageSubresourceRange *p_subresources)
 {
 	struct VRVulkanTextureData_t vkdata;
 	IDXGIVkInteropDevice *dxvk_device;
@@ -781,12 +778,13 @@ static EVROverlayError ivroverlay_set_overlay_texture_dxvk(
 	VkImage image_handle;
 	VkImageLayout image_layout;
 	VkImageCreateInfo image_info;
-	VkImageSubresourceRange subresources;
 
 	EVRCompositorError err;
 
 	dxvk_surface->lpVtbl->GetDevice(dxvk_surface, &dxvk_device);
-	user_data->dxvk_device = dxvk_device;
+	if (p_dxvk_device) {
+		*p_dxvk_device = dxvk_device;
+	}
 
 	dxvk_device->lpVtbl->GetVulkanHandles(dxvk_device, &vkdata.m_pInstance, &vkdata.m_pPhysicalDevice, &vkdata.m_pDevice);
 	dxvk_device->lpVtbl->GetSubmissionQueue(dxvk_device, &vkdata.m_pQueue, &vkdata.m_nQueueFamilyIndex);
@@ -795,6 +793,9 @@ static EVROverlayError ivroverlay_set_overlay_texture_dxvk(
 	image_info.pNext = NULL;
 
 	dxvk_surface->lpVtbl->GetVulkanImageInfo(dxvk_surface, &image_handle, &image_layout, &image_info);
+	if (p_image_layout) {
+		*p_image_layout = image_layout;
+	}
 
 	load_vk_unwrappers();
 
@@ -811,7 +812,37 @@ static EVROverlayError ivroverlay_set_overlay_texture_dxvk(
 	vktexture = *texture;
 	vktexture.handle = &vkdata;
 	vktexture.eType = TextureType_Vulkan;
-	
+
+	if (p_subresources) {
+		p_subresources->aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		p_subresources->baseMipLevel = 0;
+		p_subresources->levelCount = image_info.mipLevels;
+		p_subresources->baseArrayLayer = 0;
+		p_subresources->layerCount = image_info.arrayLayers;
+	}
+
+	if (!p_dxvk_device) {
+		dxvk_device->lpVtbl->Release(dxvk_device);
+	}
+
+	return vktexture;
+}
+
+static EVROverlayError ivroverlay_set_overlay_texture_dxvk(
+		EVROverlayError (*cpp_func)(void *, VROverlayHandle_t, Texture_t *),
+		void *linux_side, VROverlayHandle_t overlayHandle, Texture_t *texture,
+		unsigned int version, struct overlay_data *user_data, IDXGIVkInteropSurface *dxvk_surface)
+{
+	struct Texture_t vktexture;
+	IDXGIVkInteropDevice *dxvk_device;
+	VkImageSubresourceRange subresources;
+	VkImageLayout image_layout;
+
+	EVRCompositorError err;
+
+	vktexture = vrclient_translate_texture_dxvk(texture, dxvk_surface, &user_data->dxvk_device, &image_layout, &subresources);
+	dxvk_device = user_data->dxvk_device;
+
 	dxvk_device->lpVtbl->TransitionSurfaceLayout(dxvk_device, dxvk_surface, &subresources,
 		image_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 	dxvk_device->lpVtbl->FlushRenderingCommands(dxvk_device);
@@ -844,45 +875,10 @@ static EVRCompositorError ivrcompositor_submit_dxvk(
 
     EVRCompositorError err;
 
-    dxvk_surface->lpVtbl->GetDevice(dxvk_surface, &dxvk_device);
-
-    user_data->dxvk_device = dxvk_device;
-
-    dxvk_device->lpVtbl->GetVulkanHandles(dxvk_device, &vkdata.m_pInstance,
-            &vkdata.m_pPhysicalDevice, &vkdata.m_pDevice);
-
-    dxvk_device->lpVtbl->GetSubmissionQueue(dxvk_device, &vkdata.m_pQueue, &vkdata.m_nQueueFamilyIndex);
-
-    /* DXVK needs this to be initialized correctly */
-    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    image_info.pNext = NULL;
-
-    dxvk_surface->lpVtbl->GetVulkanImageInfo(dxvk_surface, &image_handle, &image_layout, &image_info);
-
-    load_vk_unwrappers();
-
-    vkdata.m_nImage = (uint64_t)image_handle;
-    vkdata.m_pDevice = get_native_VkDevice(vkdata.m_pDevice);
-    vkdata.m_pPhysicalDevice = get_native_VkPhysicalDevice(vkdata.m_pPhysicalDevice);
-    vkdata.m_pInstance = get_native_VkInstance(vkdata.m_pInstance);
-    vkdata.m_pQueue = get_native_VkQueue(vkdata.m_pQueue);
-    vkdata.m_nWidth = image_info.extent.width;
-    vkdata.m_nHeight = image_info.extent.height;
-    vkdata.m_nFormat = image_info.format;
-    vkdata.m_nSampleCount = image_info.samples;
+    vktexture = vrclient_translate_texture_dxvk(texture, dxvk_surface, &user_data->dxvk_device, &image_layout, &subresources);
 
     if (flags & (Submit_TextureWithPose | Submit_TextureWithDepth))
         FIXME("Unhandled flags %#x.\n", flags & (Submit_TextureWithPose | Submit_TextureWithDepth));
-
-    vktexture = *texture;
-    vktexture.handle = &vkdata;
-    vktexture.eType = TextureType_Vulkan;
-
-    subresources.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    subresources.baseMipLevel = 0;
-    subresources.levelCount = image_info.mipLevels;
-    subresources.baseArrayLayer = 0;
-    subresources.layerCount = image_info.arrayLayers;
 
     dxvk_device->lpVtbl->TransitionSurfaceLayout(dxvk_device, dxvk_surface, &subresources,
             image_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);

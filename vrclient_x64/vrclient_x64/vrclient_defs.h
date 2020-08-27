@@ -1,3 +1,7 @@
+#pragma once
+
+#include <stdint.h>
+
 #ifndef __cplusplus
 #ifndef bool
 typedef char bool; /* 1 byte on modern visual studio c++ */
