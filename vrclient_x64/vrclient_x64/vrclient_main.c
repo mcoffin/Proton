@@ -769,6 +769,74 @@ static EVRCompositorError ivrcompositor_submit_wined3d(
 }
 
 #ifdef VRCLIENT_HAVE_DXVK
+static inline VkImageSubresourceRange vrclient_dxvk_vkimagecreateinfo_to_subresources(VkImageCreateInfo *image_info)
+{
+	VkImageSubresourceRange subresources = {
+		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		.baseMipLevel = 0,
+		.levelCount = image_info->mipLevels,
+		.baseArrayLayer = 0,
+		.layerCount = image_info->arrayLayers
+	};
+	return subresources;
+}
+
+static Texture_t vrclient_translate_texture_dxvk(Texture_t *texture, struct VRVulkanTextureData_t *vkdata, IDXGIVkInteropSurface *dxvk_surface, IDXGIVkInteropDevice **p_dxvk_device, VkImageLayout *p_image_layout, VkImageCreateInfo *p_image_info)
+{
+	IDXGIVkInteropDevice *dxvk_device;
+	struct Texture_t vktexture;
+
+	VkImage image_handle;
+	VkImageLayout image_layout;
+	VkImageCreateInfo image_info;
+
+	TRACE("translate_texture: texture = %p, dxvk_surface = %p, p_dxvk_device = %p, p_image_layout = %p, p_image_info = %p\n", texture, dxvk_surface, p_dxvk_device, p_image_layout, p_image_info);
+
+	dxvk_surface->lpVtbl->GetDevice(dxvk_surface, &dxvk_device);
+	if (p_dxvk_device) {
+		*p_dxvk_device = dxvk_device;
+	}
+
+	dxvk_device->lpVtbl->GetVulkanHandles(dxvk_device, &vkdata->m_pInstance, &vkdata->m_pPhysicalDevice, &vkdata->m_pDevice);
+	dxvk_device->lpVtbl->GetSubmissionQueue(dxvk_device, &vkdata->m_pQueue, &vkdata->m_nQueueFamilyIndex);
+
+	image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	image_info.pNext = NULL;
+
+	dxvk_surface->lpVtbl->GetVulkanImageInfo(dxvk_surface, &image_handle, &image_layout, &image_info);
+	if (p_image_layout) {
+		*p_image_layout = image_layout;
+	}
+	if (p_image_info) {
+		*p_image_info = image_info;
+	}
+
+	load_vk_unwrappers();
+
+	vkdata->m_nImage = (uint64_t)image_handle;
+	vkdata->m_pDevice = get_native_VkDevice(vkdata->m_pDevice);
+	vkdata->m_pPhysicalDevice = get_native_VkPhysicalDevice(vkdata->m_pPhysicalDevice);
+	vkdata->m_pInstance = get_native_VkInstance(vkdata->m_pInstance);
+	vkdata->m_pQueue = get_native_VkQueue(vkdata->m_pQueue);
+	vkdata->m_nWidth = image_info.extent.width;
+	vkdata->m_nHeight = image_info.extent.height;
+	vkdata->m_nFormat = image_info.format;
+	vkdata->m_nSampleCount = image_info.samples;
+
+	vktexture = *texture;
+	vktexture.handle = vkdata;
+	vktexture.eType = TextureType_Vulkan;
+
+	if (!p_dxvk_device) {
+		TRACE("releasing un-requested device = %p\n", dxvk_device);
+		dxvk_device->lpVtbl->Release(dxvk_device);
+	}
+
+	TRACE("returning texture with handle = %p\n", vktexture.handle);
+
+	return vktexture;
+}
+
 static EVROverlayError ivroverlay_set_overlay_texture_dxvk(
 		EVROverlayError (*cpp_func)(void *, VROverlayHandle_t, Texture_t *),
 		void *linux_side, VROverlayHandle_t overlayHandle, Texture_t *texture,
@@ -778,40 +846,16 @@ static EVROverlayError ivroverlay_set_overlay_texture_dxvk(
 	IDXGIVkInteropDevice *dxvk_device;
 	struct Texture_t vktexture;
 
-	VkImage image_handle;
 	VkImageLayout image_layout;
 	VkImageCreateInfo image_info;
 	VkImageSubresourceRange subresources;
 
 	EVRCompositorError err;
 
-	dxvk_surface->lpVtbl->GetDevice(dxvk_surface, &dxvk_device);
-	user_data->dxvk_device = dxvk_device;
-
-	dxvk_device->lpVtbl->GetVulkanHandles(dxvk_device, &vkdata.m_pInstance, &vkdata.m_pPhysicalDevice, &vkdata.m_pDevice);
-	dxvk_device->lpVtbl->GetSubmissionQueue(dxvk_device, &vkdata.m_pQueue, &vkdata.m_nQueueFamilyIndex);
-
-	image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-	image_info.pNext = NULL;
-
-	dxvk_surface->lpVtbl->GetVulkanImageInfo(dxvk_surface, &image_handle, &image_layout, &image_info);
-
-	load_vk_unwrappers();
-
-	vkdata.m_nImage = (uint64_t)image_handle;
-	vkdata.m_pDevice = get_native_VkDevice(vkdata.m_pDevice);
-	vkdata.m_pPhysicalDevice = get_native_VkPhysicalDevice(vkdata.m_pPhysicalDevice);
-	vkdata.m_pInstance = get_native_VkInstance(vkdata.m_pInstance);
-	vkdata.m_pQueue = get_native_VkQueue(vkdata.m_pQueue);
-	vkdata.m_nWidth = image_info.extent.width;
-	vkdata.m_nHeight = image_info.extent.height;
-	vkdata.m_nFormat = image_info.format;
-	vkdata.m_nSampleCount = image_info.samples;
-
-	vktexture = *texture;
-	vktexture.handle = &vkdata;
-	vktexture.eType = TextureType_Vulkan;
+	vktexture = vrclient_translate_texture_dxvk(texture, &vkdata, dxvk_surface, &dxvk_device, &image_layout, &image_info);
 	
+	subresources = vrclient_dxvk_vkimagecreateinfo_to_subresources(&image_info);
+
 	dxvk_device->lpVtbl->TransitionSurfaceLayout(dxvk_device, dxvk_surface, &subresources,
 		image_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 	dxvk_device->lpVtbl->FlushRenderingCommands(dxvk_device);
@@ -833,71 +877,36 @@ static EVRCompositorError ivrcompositor_submit_dxvk(
         void *linux_side, EVREye eye, Texture_t *texture, VRTextureBounds_t *bounds, EVRSubmitFlags flags,
         unsigned int version, struct compositor_data *user_data, IDXGIVkInteropSurface *dxvk_surface)
 {
-    struct VRVulkanTextureData_t vkdata;
-    IDXGIVkInteropDevice *dxvk_device;
-    struct Texture_t vktexture;
+	struct VRVulkanTextureData_t vkdata;
+	IDXGIVkInteropDevice *dxvk_device;
+	struct Texture_t vktexture;
 
-    VkImage image_handle;
-    VkImageLayout image_layout;
-    VkImageCreateInfo image_info;
-    VkImageSubresourceRange subresources;
+	VkImageLayout image_layout;
+	VkImageCreateInfo image_info;
+	VkImageSubresourceRange subresources;
 
-    EVRCompositorError err;
+	EVRCompositorError err;
 
-    dxvk_surface->lpVtbl->GetDevice(dxvk_surface, &dxvk_device);
+	vktexture = vrclient_translate_texture_dxvk(texture, &vkdata, dxvk_surface, &dxvk_device, &image_layout, &image_info);
+	
+	subresources = vrclient_dxvk_vkimagecreateinfo_to_subresources(&image_info);
+	if (flags & (Submit_TextureWithPose | Submit_TextureWithDepth))
+		FIXME("Unhandled flags %#x.\n", flags & (Submit_TextureWithPose | Submit_TextureWithDepth));
 
-    user_data->dxvk_device = dxvk_device;
-
-    dxvk_device->lpVtbl->GetVulkanHandles(dxvk_device, &vkdata.m_pInstance,
-            &vkdata.m_pPhysicalDevice, &vkdata.m_pDevice);
-
-    dxvk_device->lpVtbl->GetSubmissionQueue(dxvk_device, &vkdata.m_pQueue, &vkdata.m_nQueueFamilyIndex);
-
-    /* DXVK needs this to be initialized correctly */
-    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    image_info.pNext = NULL;
-
-    dxvk_surface->lpVtbl->GetVulkanImageInfo(dxvk_surface, &image_handle, &image_layout, &image_info);
-
-    load_vk_unwrappers();
-
-    vkdata.m_nImage = (uint64_t)image_handle;
-    vkdata.m_pDevice = get_native_VkDevice(vkdata.m_pDevice);
-    vkdata.m_pPhysicalDevice = get_native_VkPhysicalDevice(vkdata.m_pPhysicalDevice);
-    vkdata.m_pInstance = get_native_VkInstance(vkdata.m_pInstance);
-    vkdata.m_pQueue = get_native_VkQueue(vkdata.m_pQueue);
-    vkdata.m_nWidth = image_info.extent.width;
-    vkdata.m_nHeight = image_info.extent.height;
-    vkdata.m_nFormat = image_info.format;
-    vkdata.m_nSampleCount = image_info.samples;
-
-    if (flags & (Submit_TextureWithPose | Submit_TextureWithDepth))
-        FIXME("Unhandled flags %#x.\n", flags & (Submit_TextureWithPose | Submit_TextureWithDepth));
-
-    vktexture = *texture;
-    vktexture.handle = &vkdata;
-    vktexture.eType = TextureType_Vulkan;
-
-    subresources.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    subresources.baseMipLevel = 0;
-    subresources.levelCount = image_info.mipLevels;
-    subresources.baseArrayLayer = 0;
-    subresources.layerCount = image_info.arrayLayers;
-
-    dxvk_device->lpVtbl->TransitionSurfaceLayout(dxvk_device, dxvk_surface, &subresources,
-            image_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    dxvk_device->lpVtbl->FlushRenderingCommands(dxvk_device);
-    dxvk_device->lpVtbl->LockSubmissionQueue(dxvk_device);
-
-    err = cpp_func(linux_side, eye, &vktexture, bounds, flags);
-
-    dxvk_device->lpVtbl->ReleaseSubmissionQueue(dxvk_device);
-    dxvk_device->lpVtbl->TransitionSurfaceLayout(dxvk_device, dxvk_surface, &subresources,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image_layout);
-
-    dxvk_device->lpVtbl->Release(dxvk_device);
-    dxvk_surface->lpVtbl->Release(dxvk_surface);
-    return err;
+	dxvk_device->lpVtbl->TransitionSurfaceLayout(dxvk_device, dxvk_surface, &subresources,
+	        image_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	dxvk_device->lpVtbl->FlushRenderingCommands(dxvk_device);
+	dxvk_device->lpVtbl->LockSubmissionQueue(dxvk_device);
+	
+	err = cpp_func(linux_side, eye, &vktexture, bounds, flags);
+	
+	dxvk_device->lpVtbl->ReleaseSubmissionQueue(dxvk_device);
+	dxvk_device->lpVtbl->TransitionSurfaceLayout(dxvk_device, dxvk_surface, &subresources,
+	        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image_layout);
+	
+	dxvk_device->lpVtbl->Release(dxvk_device);
+	dxvk_surface->lpVtbl->Release(dxvk_surface);
+	return err;
 }
 #endif
 
