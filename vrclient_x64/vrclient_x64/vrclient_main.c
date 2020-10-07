@@ -1040,6 +1040,9 @@ EVROverlayError ivroverlay_set_overlay_texture(
 				}
 			}
 #endif
+			// TODO: Handle VKD3D and WineD3D cases
+			WARN("Non-D3D11 DirectX texture.\n");
+			goto overlay_warn_out;
 		case TextureType_Vulkan:
 			TRACE("Vulkan\n");
 			return ivroverlay_set_overlay_texture_vulkan(cpp_func, linux_side, overlayHandle, texture, version, user_data);
